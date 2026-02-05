@@ -8,6 +8,10 @@ const io = new Server(server);
 
 app.use(express.static("public"));
 
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public/user.html'));
+});
+
 const users = {}; // socketId -> { role, cameraId }
 
 io.on("connection", (socket) => {
