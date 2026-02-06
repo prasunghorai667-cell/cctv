@@ -27,6 +27,8 @@ navigator.mediaDevices.getUserMedia({
     console.log("Camera access granted");
 
     video.srcObject = stream;
+    video.muted = true;
+
 
     socket.on("signal", async ({ from, data }) => {
       console.log("USER received:", data.type || "ICE");

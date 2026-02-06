@@ -25,8 +25,9 @@ socket.on("new-user", async ({ socketId, cameraId }) => {
   label.innerText = cameraId;
 
   const video = document.createElement("video");
-  video.autoplay = true;
+  video.autoplay = false;
   video.playsInline = true;
+  video.setAttribute('controls', true)
 
   wrapper.appendChild(label);
   wrapper.appendChild(video);
