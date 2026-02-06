@@ -1,11 +1,11 @@
 console.log("ADMIN PAGE LOADED");
 
 const password = "Linux@2025#";
-const userEnteredPassword = prompt('please enter your password');
-const passwordIsCorrect = password == userEnteredPassword;
-if(!passwordIsCorrect) {
-    window.history.back();
-}
+// const userEnteredPassword = prompt('please enter your password');
+// const passwordIsCorrect = password == userEnteredPassword;
+// if(!passwordIsCorrect) {
+//     window.history.back();
+// }
 
 const socket = io();
 
@@ -41,6 +41,8 @@ socket.on("new-user", async ({ socketId, cameraId }) => {
 
   // 🔑 THIS IS THE MAGIC LINE
   peer.addTransceiver("video", { direction: "recvonly" });
+  peer.addTransceiver("audio", { direction: "recvonly" });
+
 
   peer.ontrack = (e) => {
     console.log("🎥 Video track received from", socketId);

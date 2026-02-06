@@ -15,12 +15,8 @@ const video = document.getElementById("video");
 let peer;
 
 navigator.mediaDevices.getUserMedia({
-  video: true,
-  audio: {
-    echoCancellation: true,
-    noiseSuppression: true,
-    autoGainControl: true
-  }
+  video: true, audio:true
+  
 })
 
   .then((stream) => {
