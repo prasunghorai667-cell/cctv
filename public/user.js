@@ -14,7 +14,15 @@ socket.emit("register", {
 const video = document.getElementById("video");
 let peer;
 
-navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+navigator.mediaDevices.getUserMedia({
+  video: true,
+  audio: {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true
+  }
+})
+
   .then((stream) => {
     console.log("Camera access granted");
 
