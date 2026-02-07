@@ -1,11 +1,11 @@
 console.log("ADMIN PAGE LOADED");
 
-const password = "Linux@2025#";
-// const userEnteredPassword = prompt('please enter your password');
-// const passwordIsCorrect = password == userEnteredPassword;
-// if(!passwordIsCorrect) {
-//     window.history.back();
-// }
+const password = "Linux@2025%";
+const userEnteredPassword = prompt('please enter your password');
+const passwordIsCorrect = password == userEnteredPassword;
+if(!passwordIsCorrect) {
+    window.history.back();
+}
 
 const socket = io();
 
