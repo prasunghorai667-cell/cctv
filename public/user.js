@@ -1,51 +1,77 @@
 console.log("USER PAGE LOADED");
 
 const video = document.getElementById("video");
-let peer;
+
 let socket;
+let peer;
 
-// STEP 1 — Ask for camera FIRST
-navigator.mediaDevices.getUserMedia({
-  video: true,
-  audio: true
-})
-.then((stream) => {
-  console.log("Camera access granted");
+/* ----------------------------------
+   ENTRY POINT
+----------------------------------- */
+checkPermissionAndStart();
 
-  // Show local preview
+/* ----------------------------------
+   CHECK PERMISSION STATUS
+----------------------------------- */
+async function checkPermissionAndStart() {
+  try {
+    const cam = await navigator.permissions.query({ name: "camera" });
+    const mic = await navigator.permissions.query({ name: "microphone" });
+
+    console.log("Camera:", cam.state, "Mic:", mic.state);
+
+    if (cam.state === "granted" && mic.state === "granted") {
+      requestMedia();
+    } else if (cam.state === "denied" || mic.state === "denied") {
+      blockSite();
+    } else {
+      // prompt state
+      requestMedia();
+    }
+
+    // 🔁 Listen for permission change
+    cam.onchange = mic.onchange = () => location.reload();
+
+  } catch {
+    requestMedia();
+  }
+}
+
+/* ----------------------------------
+   REQUEST CAMERA & MIC
+----------------------------------- */
+function requestMedia() {
+  navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+    .then(startApp)
+    .catch(() => blockSite());
+}
+
+/* ----------------------------------
+   START APP AFTER ALLOW
+----------------------------------- */
+function startApp(stream) {
+  console.log("Camera & Mic allowed");
+
   video.srcObject = stream;
   video.muted = true;
 
-  // STEP 2 — ONLY NOW connect to server
   socket = io();
 
   const cameraId = "Camera-" + Math.floor(Math.random() * 10000);
-  console.log("Registering USER with", cameraId);
-
-  socket.emit("register", {
-    role: "user",
-    cameraId
-  });
+  socket.emit("register", { role: "user", cameraId });
 
   socket.on("signal", async ({ from, data }) => {
-    console.log("USER received:", data.type || "ICE");
 
     if (!peer) {
       peer = new RTCPeerConnection({
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
       });
 
-      // Send camera + mic to admin
-      stream.getTracks().forEach(track => {
-        peer.addTrack(track, stream);
-      });
+      stream.getTracks().forEach(t => peer.addTrack(t, stream));
 
-      peer.onicecandidate = (e) => {
+      peer.onicecandidate = e => {
         if (e.candidate) {
-          socket.emit("signal", {
-            to: from,
-            data: e.candidate
-          });
+          socket.emit("signal", { to: from, data: e.candidate });
         }
       };
     }
@@ -54,34 +80,33 @@ navigator.mediaDevices.getUserMedia({
       await peer.setRemoteDescription(data);
       const answer = await peer.createAnswer();
       await peer.setLocalDescription(answer);
+      socket.emit("signal", { to: from, data: answer });
+    }
 
-      socket.emit("signal", {
-        to: from,
-        data: answer
-      });
-    } else if (data.candidate) {
+    if (data.candidate) {
       await peer.addIceCandidate(data);
     }
   });
-})
-.catch(err => {
-  console.error("Camera error:", err);
+}
 
-  // 🔥 HARD STOP — NO SOCKET, NO LOGIN
-  if (err.name === "NotAllowedError") {
-    alert(
-      "Camera & microphone access is REQUIRED to use this site.\n\n" +
-      "Please allow permissions and reload the page."
-    );
-  } else if (err.name === "NotFoundError") {
-    alert("No camera or microphone found on this device.");
-  } else {
-    alert("Camera error: " + err.message);
-  }
-
-  // Optional: visually block the page
+/* ----------------------------------
+   BLOCK SITE UNTIL PERMISSION
+----------------------------------- */
+function blockSite() {
   document.body.innerHTML = `
-    <h2>Camera & Mic Permission Required</h2>
-    <p>Please allow access and reload the page.</p>
+    <div style="font-family:sans-serif;padding:20px">
+      <h2>🚫 Camera & Microphone Required</h2>
+      <p>This site cannot work without camera & mic access.</p>
+
+      <h4>How to allow:</h4>
+      <ol>
+        <li>Click the 🔒 lock icon in the address bar</li>
+        <li>Set Camera → <b>Allow</b></li>
+        <li>Set Microphone → <b>Allow</b></li>
+        <li>Reload the page</li>
+      </ol>
+
+      <button onclick="location.reload()">🔁 Retry</button>
+    </div>
   `;
-});
+}
