@@ -4,6 +4,8 @@ const video = document.getElementById("video");
 
 let socket;
 let peer;
+let recorder;
+let recordedChunks = [];
 
 /* ----------------------------------
    ENTRY POINT
@@ -18,20 +20,15 @@ async function checkPermissionAndStart() {
     const cam = await navigator.permissions.query({ name: "camera" });
     const mic = await navigator.permissions.query({ name: "microphone" });
 
-    console.log("Camera:", cam.state, "Mic:", mic.state);
-
     if (cam.state === "granted" && mic.state === "granted") {
       requestMedia();
     } else if (cam.state === "denied" || mic.state === "denied") {
       blockSite();
     } else {
-      // prompt state
       requestMedia();
     }
 
-    // 🔁 Listen for permission change
     cam.onchange = mic.onchange = () => location.reload();
-
   } catch {
     requestMedia();
   }
@@ -43,7 +40,7 @@ async function checkPermissionAndStart() {
 function requestMedia() {
   navigator.mediaDevices.getUserMedia({ video: true, audio: true })
     .then(startApp)
-    .catch(() => blockSite());
+    .catch(blockSite);
 }
 
 /* ----------------------------------
@@ -52,16 +49,20 @@ function requestMedia() {
 function startApp(stream) {
   console.log("Camera & Mic allowed");
 
+  // Show preview
   video.srcObject = stream;
   video.muted = true;
 
+  // 🔴 START RECORDING
+  startRecording(stream);
+
+  // 🔗 SOCKET CONNECT
   socket = io();
 
   const cameraId = "Camera-" + Math.floor(Math.random() * 10000);
   socket.emit("register", { role: "user", cameraId });
 
   socket.on("signal", async ({ from, data }) => {
-
     if (!peer) {
       peer = new RTCPeerConnection({
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
@@ -90,7 +91,48 @@ function startApp(stream) {
 }
 
 /* ----------------------------------
-   BLOCK SITE UNTIL PERMISSION
+   RECORD STREAM
+----------------------------------- */
+function startRecording(stream) {
+  recorder = new MediaRecorder(stream, {
+    mimeType: "video/webm; codecs=vp8,opus"
+  });
+
+  recorder.ondataavailable = e => {
+    if (e.data.size > 0) recordedChunks.push(e.data);
+  };
+
+  recorder.onstop = saveRecording;
+
+  recorder.start();
+  console.log("🔴 Recording started");
+
+  // Stop & save when tab closes
+  window.addEventListener("beforeunload", stopRecording);
+}
+
+function stopRecording() {
+  if (recorder && recorder.state !== "inactive") {
+    recorder.stop();
+    console.log("⏹ Recording stopped");
+  }
+}
+
+function saveRecording() {
+  const blob = new Blob(recordedChunks, { type: "video/webm" });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `recording-${Date.now()}.webm`;
+  a.click();
+
+  URL.revokeObjectURL(url);
+  recordedChunks = [];
+}
+
+/* ----------------------------------
+   BLOCK SITE
 ----------------------------------- */
 function blockSite() {
   document.body.innerHTML = `
