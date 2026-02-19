@@ -1,83 +1,45 @@
 const express = require("express");
 const http = require("http");
+const fs = require("fs");
+const path = require("path");
 const { Server } = require("socket.io");
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+  maxHttpBufferSize: 1e8 // allow large chunks
+});
 
-app.use(express.static("public"));
-const users = {}; // socketId -> { role, cameraId }
+app.use(express.static("public")); // DO NOT expose recordings folder
+
+const recordingsDir = path.join(__dirname, "recordings");
+if (!fs.existsSync(recordingsDir)) {
+  fs.mkdirSync(recordingsDir);
+}
 
 io.on("connection", (socket) => {
-  console.log("🟢 Connected:", socket.id);
+  console.log("🟢 User connected:", socket.id);
 
-  // REGISTER USER / ADMIN
-  socket.on("register", ({ role, cameraId }) => {
-    console.log("📥 Register event:", socket.id, role, cameraId);
+  const cameraId = "Camera-" + socket.id.slice(0, 6);
+  const filePath = path.join(
+    recordingsDir,
+    `${cameraId}-${Date.now()}.webm`
+  );
 
-    users[socket.id] = { role, cameraId };
+  const fileStream = fs.createWriteStream(filePath);
 
-    // If USER joins, notify admin
-    if (role === "user") {
-      const adminId = getAdmin();
-      console.log("👤 User joined. Admin:", adminId);
+  console.log("🎥 Recording started:", filePath);
 
-      if (adminId) {
-        io.to(adminId).emit("new-user", {
-          socketId: socket.id,
-          cameraId,
-        });
-        console.log("📤 Sent new-user to admin");
-      }
-    }
-
-    // If ADMIN joins, send all existing users
-    if (role === "admin") {
-      console.log("🛠 Admin joined. Sending existing users");
-
-      Object.keys(users).forEach((id) => {
-        if (users[id].role === "user") {
-          socket.emit("new-user", {
-            socketId: id,
-            cameraId: users[id].cameraId,
-          });
-          console.log("📤 Sent existing user:", id);
-        }
-      });
-    }
-  });
-
-  // WEBRTC SIGNALING
-  socket.on("signal", ({ to, data }) => {
-    console.log(
-      "📡 Signal:",
-      socket.id,
-      "→",
-      to,
-      data.type || "ICE"
-    );
-
-    io.to(to).emit("signal", {
-      from: socket.id,
-      data,
-    });
+  socket.on("recording-chunk", (chunk) => {
+    fileStream.write(Buffer.from(chunk));
   });
 
   socket.on("disconnect", () => {
-    console.log("🔴 Disconnected:", socket.id);
-    delete users[socket.id];
-    io.emit("user-left", socket.id);
+    fileStream.end();
+    console.log("⏹ Recording saved:", filePath);
   });
 });
 
-function getAdmin() {
-  const admin = Object.keys(users).find(
-    (id) => users[id].role === "admin"
-  );
-  return admin;
-}
-
 server.listen(3000, () => {
-  console.log("🚀 Server running at http://localhost:3000");
+  console.log("Server running on port 3000");
 });
