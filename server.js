@@ -1,110 +1,83 @@
 const express = require("express");
 const http = require("http");
-const fs = require("fs");
-const path = require("path");
 const { Server } = require("socket.io");
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, {
-  maxHttpBufferSize: 1e8
-});
+const io = new Server(server);
 
 app.use(express.static("public"));
-
-const recordingsDir = path.join(__dirname, "recordings");
-if (!fs.existsSync(recordingsDir)) {
-  fs.mkdirSync(recordingsDir);
-}
-
-let users = {};
-let admins = {};
+const users = {}; // socketId -> { role, cameraId }
 
 io.on("connection", (socket) => {
+  console.log("🟢 Connected:", socket.id);
 
-  console.log("Connected:", socket.id);
-
-  /* -------------------------
-     REGISTER USER / ADMIN
-  ------------------------- */
+  // REGISTER USER / ADMIN
   socket.on("register", ({ role, cameraId }) => {
+    console.log("📥 Register event:", socket.id, role, cameraId);
 
+    users[socket.id] = { role, cameraId };
+
+    // If USER joins, notify admin
     if (role === "user") {
-      users[socket.id] = cameraId;
-      socket.cameraId = cameraId;
+      const adminId = getAdmin();
+      console.log("👤 User joined. Admin:", adminId);
 
-      // Notify admins
-      Object.keys(admins).forEach(adminId => {
-        io.to(adminId).emit("new-camera", {
+      if (adminId) {
+        io.to(adminId).emit("new-user", {
           socketId: socket.id,
-          cameraId
+          cameraId,
         });
-      });
-
-      // 🔴 START RECORD FILE
-      const filePath = path.join(
-        recordingsDir,
-        `${cameraId}-${Date.now()}.webm`
-      );
-
-      socket.fileStream = fs.createWriteStream(filePath);
-      console.log("Recording started:", filePath);
+        console.log("📤 Sent new-user to admin");
+      }
     }
 
+    // If ADMIN joins, send all existing users
     if (role === "admin") {
-      admins[socket.id] = true;
+      console.log("🛠 Admin joined. Sending existing users");
 
-      // Send existing cameras
-      Object.entries(users).forEach(([id, camId]) => {
-        socket.emit("new-camera", {
-          socketId: id,
-          cameraId: camId
-        });
+      Object.keys(users).forEach((id) => {
+        if (users[id].role === "user") {
+          socket.emit("new-user", {
+            socketId: id,
+            cameraId: users[id].cameraId,
+          });
+          console.log("📤 Sent existing user:", id);
+        }
       });
     }
   });
 
-  /* -------------------------
-     WEBRTC SIGNALING (IMPORTANT)
-  ------------------------- */
+  // WEBRTC SIGNALING
   socket.on("signal", ({ to, data }) => {
+    console.log(
+      "📡 Signal:",
+      socket.id,
+      "→",
+      to,
+      data.type || "ICE"
+    );
+
     io.to(to).emit("signal", {
       from: socket.id,
-      data
+      data,
     });
   });
 
-  /* -------------------------
-     RECORDING CHUNKS
-  ------------------------- */
-  socket.on("recording-chunk", (chunk) => {
-    if (socket.fileStream) {
-      socket.fileStream.write(Buffer.from(chunk));
-    }
-  });
-
-  /* -------------------------
-     DISCONNECT
-  ------------------------- */
   socket.on("disconnect", () => {
-
-    if (socket.fileStream) {
-      socket.fileStream.end();
-      console.log("Recording saved for:", socket.cameraId);
-    }
-
+    console.log("🔴 Disconnected:", socket.id);
     delete users[socket.id];
-    delete admins[socket.id];
-
-    // Inform admins camera went offline
-    Object.keys(admins).forEach(adminId => {
-      io.to(adminId).emit("camera-disconnected", socket.id);
-    });
-
-    console.log("Disconnected:", socket.id);
+    io.emit("user-left", socket.id);
   });
 });
 
+function getAdmin() {
+  const admin = Object.keys(users).find(
+    (id) => users[id].role === "admin"
+  );
+  return admin;
+}
+
 server.listen(3000, () => {
-  console.log("Server running on port 3000");
+  console.log("🚀 Server running at http://localhost:3000");
 });
