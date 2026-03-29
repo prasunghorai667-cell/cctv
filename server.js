@@ -99,6 +99,18 @@ io.on("connection", (socket) => {
   });
 
   // ==============================
+  // CAMERA SWITCHED NOTIFICATION
+  // ==============================
+  socket.on("camera-switched", ({ to, camera }) => {
+    console.log("📷 Camera switched:", socket.id, "→", camera);
+
+    io.to(to).emit("camera-switched", {
+      from: socket.id,
+      camera
+    });
+  });
+
+  // ==============================
   // DISCONNECT
   // ==============================
   socket.on("disconnect", () => {

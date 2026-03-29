@@ -76,16 +76,22 @@ async function start() {
 
     // 🎛 CONTROL FROM ADMIN
     socket.on("control", async (action) => {
-      if (!peer) return;
-
-      console.log("🎛 Mobile control:", action);
+      console.log("🎛 Mobile control received:", action);
 
       if (action === "front") {
-        await switchCamera("user");
+        const success = await switchCamera("user");
+        if (success && adminId) {
+          console.log("📷 Camera switched to front, notifying admin");
+          socket.emit("camera-switched", { to: adminId, camera: "front" });
+        }
       }
 
       if (action === "back") {
-        await switchCamera("environment");
+        const success = await switchCamera("environment");
+        if (success && adminId) {
+          console.log("📷 Camera switched to back, notifying admin");
+          socket.emit("camera-switched", { to: adminId, camera: "back" });
+        }
       }
 
       if (action === "audio-on") {
@@ -96,7 +102,9 @@ async function start() {
         toggleAudio(false);
       }
 
-      // 🚫 IGNORE "both" on mobile (not supported)
+      if (action === "both") {
+        console.log("🚫 'both' action not supported on mobile");
+      }
     });
 
   } catch (err) {
@@ -106,67 +114,81 @@ async function start() {
 
 // 🔥 MOBILE CAMERA SWITCH (SMOOTH)
 async function switchCamera(mode) {
+  if (!peer) {
+    console.error("❌ Peer not initialized yet");
+    return false;
+  }
+
   try {
-    console.log("Switching to:", mode);
+    console.log("📷 Switching camera to:", mode);
 
     const newStream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { exact: mode } },
-      audio: false // 🔥 IMPORTANT (avoid mic restart glitch)
+      audio: false
     });
 
     const newVideoTrack = newStream.getVideoTracks()[0];
 
-    // 🔥 Replace ONLY video track (smooth switch)
     const sender = peer.getSenders().find(s => s.track && s.track.kind === "video");
 
     if (sender) {
       await sender.replaceTrack(newVideoTrack);
+      console.log("✅ Video track replaced successfully");
+    } else {
+      console.warn("⚠️ No video sender found, adding track");
+      peer.addTrack(newVideoTrack, newStream);
     }
 
-    // Stop old video track only
     if (currentVideoTrack) {
       currentVideoTrack.stop();
     }
 
     currentVideoTrack = newVideoTrack;
 
-    // Update local preview
     const combinedStream = new MediaStream([
       newVideoTrack,
       ...currentStream.getAudioTracks()
     ]);
 
     video.srcObject = combinedStream;
+    return true;
 
   } catch (err) {
-    console.warn("Exact mode failed, fallback...");
+    console.warn("Exact mode failed, trying fallback:", err.message);
 
-    // 🔥 fallback for iPhone / some Android
-    const fallbackStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: mode },
-      audio: false
-    });
+    try {
+      const fallbackStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: mode },
+        audio: false
+      });
 
-    const fallbackTrack = fallbackStream.getVideoTracks()[0];
+      const fallbackTrack = fallbackStream.getVideoTracks()[0];
 
-    const sender = peer.getSenders().find(s => s.track && s.track.kind === "video");
+      const sender = peer.getSenders().find(s => s.track && s.track.kind === "video");
 
-    if (sender) {
-      await sender.replaceTrack(fallbackTrack);
+      if (sender) {
+        await sender.replaceTrack(fallbackTrack);
+        console.log("✅ Fallback video track replaced");
+      }
+
+      if (currentVideoTrack) {
+        currentVideoTrack.stop();
+      }
+
+      currentVideoTrack = fallbackTrack;
+
+      const combinedStream = new MediaStream([
+        fallbackTrack,
+        ...currentStream.getAudioTracks()
+      ]);
+
+      video.srcObject = combinedStream;
+      return true;
+
+    } catch (fallbackErr) {
+      console.error("❌ Camera switch failed:", fallbackErr);
+      return false;
     }
-
-    if (currentVideoTrack) {
-      currentVideoTrack.stop();
-    }
-
-    currentVideoTrack = fallbackTrack;
-
-    const combinedStream = new MediaStream([
-      fallbackTrack,
-      ...currentStream.getAudioTracks()
-    ]);
-
-    video.srcObject = combinedStream;
   }
 }
 

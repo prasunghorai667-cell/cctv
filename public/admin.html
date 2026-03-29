@@ -45,7 +45,7 @@
 
     .front { background: #4CAF50; }
     .back { background: #2196F3; }
-    .both { background: #9C27B0; }
+    .both { background: #666; color: #999; cursor: not-allowed; }
     .audio-on { background: #FF9800; }
     .audio-off { background: #f44336; }
   </style>
@@ -104,7 +104,7 @@
       controls.innerHTML = `
         <button class="front" onclick="sendControl('${socketId}', 'front')">Front</button>
         <button class="back" onclick="sendControl('${socketId}', 'back')">Back</button>
-        <button class="both" onclick="sendControl('${socketId}', 'both')">Both</button>
+        <button class="both" disabled onclick="sendControl('${socketId}', 'both')" title="Not supported">Both</button>
         <br/>
         <button class="audio-on" onclick="sendControl('${socketId}', 'audio-on')">Audio ON</button>
         <button class="audio-off" onclick="sendControl('${socketId}', 'audio-off')">Audio OFF</button>
@@ -162,6 +162,31 @@
         await peer.setRemoteDescription(data);
       } else if (data.candidate) {
         await peer.addIceCandidate(data);
+      }
+    });
+
+    // 📷 CAMERA SWITCHED - RENEGOTIATE
+    socket.on("camera-switched", async ({ from, camera }) => {
+      console.log("📷 Camera switched by user:", from, "→", camera);
+
+      const peer = peers[from];
+      if (!peer) {
+        console.warn("⚠️ No peer found for", from);
+        return;
+      }
+
+      try {
+        const offer = await peer.createOffer();
+        await peer.setLocalDescription(offer);
+
+        socket.emit("signal", {
+          to: from,
+          data: offer,
+        });
+
+        console.log("✅ Renegotiation offer sent");
+      } catch (err) {
+        console.error("❌ Renegotiation failed:", err);
       }
     });
 
