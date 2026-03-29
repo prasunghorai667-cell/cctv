@@ -12,6 +12,23 @@ let frontCameraId = null;
 let backCameraId = null;
 let currentFacingMode = "user";
 let cameraPermissionGranted = false;
+let isConnected = false;
+
+const ICE_SERVERS = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:stun2.l.google.com:19302" },
+  { 
+    urls: "turn:openrelay.metered.ca:80",
+    username: "openrelayproject",
+    credential: "openrelayproject"
+  },
+  {
+    urls: "turn:openrelay.metered.ca:443",
+    username: "openrelayproject",
+    credential: "openrelayproject"
+  }
+];
 
 function updatePermissionUI(state) {
   const indicator = document.getElementById('status-indicator');
@@ -30,6 +47,12 @@ function updatePermissionUI(state) {
     msg.classList.add('show');
     msg.style.background = '#f44336';
     msg.textContent = 'Camera access is blocked. Please enable camera in browser settings.';
+  } else if (state === 'connecting') {
+    text.textContent = 'Connecting...';
+    msg.classList.remove('show');
+  } else if (state === 'connected') {
+    text.textContent = 'Connected to Admin';
+    msg.classList.remove('show');
   } else {
     text.textContent = 'Waiting for permission...';
     msg.classList.add('show');
@@ -43,6 +66,14 @@ function updateCameraBadge(camera) {
     badge.textContent = camera.toUpperCase();
     badge.style.background = camera === 'front' ? '#2196F3' : '#4CAF50';
   }
+}
+
+function updateConnectionStatus(status) {
+  const text = document.getElementById('permission-text');
+  if (text) {
+    text.textContent = status;
+  }
+  console.log("Connection Status:", status);
 }
 
 async function enumerateCameras() {
@@ -120,9 +151,22 @@ async function start() {
     
     await enumerateCameras();
     
+    updateConnectionStatus('Connecting to server...');
+    
     socket = io();
 
     const cameraId = "Camera-" + Math.floor(Math.random() * 10000);
+
+    socket.on("connect", () => {
+      console.log("✅ Socket connected:", socket.id);
+      updateConnectionStatus('Connected, waiting for admin...');
+    });
+
+    socket.on("disconnect", () => {
+      console.log("❌ Socket disconnected");
+      isConnected = false;
+      updateConnectionStatus('Disconnected');
+    });
 
     socket.emit("register", {
       role: "user",
@@ -131,10 +175,12 @@ async function start() {
 
     socket.on("signal", async ({ from, data }) => {
       adminId = from;
+      console.log("📡 Signal received from:", from);
 
       if (!peer) {
+        console.log("Creating new RTCPeerConnection...");
         peer = new RTCPeerConnection({
-          iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+          iceServers: ICE_SERVERS
         });
 
         currentStream.getTracks().forEach(track => {
@@ -149,9 +195,36 @@ async function start() {
             });
           }
         };
+
+        peer.oniceconnectionstatechange = () => {
+          console.log("ICE Connection State:", peer.iceConnectionState);
+          
+          if (peer.iceConnectionState === 'connected') {
+            console.log("✅ WebRTC Connected!");
+            isConnected = true;
+            updatePermissionUI('connected');
+          } else if (peer.iceConnectionState === 'failed') {
+            console.error("❌ WebRTC Failed");
+            isConnected = false;
+            updateConnectionStatus('Connection failed - retrying...');
+            setTimeout(() => reconnectPeer(), 2000);
+          } else if (peer.iceConnectionState === 'disconnected') {
+            console.warn("⚠️ WebRTC disconnected");
+            isConnected = false;
+          }
+        };
+
+        peer.onicegatheringstatechange = () => {
+          console.log("ICE Gathering State:", peer.iceGatheringState);
+        };
+
+        peer.ontrack = (e) => {
+          console.log("🎥 Track received:", e.track.kind);
+        };
       }
 
       if (data.type === "offer") {
+        console.log("📨 Received offer, creating answer...");
         await peer.setRemoteDescription(data);
 
         const answer = await peer.createAnswer();
@@ -161,13 +234,18 @@ async function start() {
           to: from,
           data: answer
         });
+        console.log("📤 Sent answer");
       } else if (data.candidate) {
-        await peer.addIceCandidate(data);
+        try {
+          await peer.addIceCandidate(data);
+        } catch (err) {
+          console.error("Error adding ICE candidate:", err);
+        }
       }
     });
 
     socket.on("control", async (action) => {
-      console.log("Control received:", action);
+      console.log("🎛 Control received:", action);
 
       if (action === "front") {
         const success = await switchCamera("front");
@@ -195,6 +273,61 @@ async function start() {
   } catch (err) {
     console.error("Camera error:", err);
     updatePermissionUI('denied');
+  }
+}
+
+async function reconnectPeer() {
+  if (!adminId || !socket) return;
+  
+  console.log("Attempting to reconnect peer...");
+  
+  try {
+    if (peer) {
+      peer.close();
+    }
+    
+    peer = new RTCPeerConnection({
+      iceServers: ICE_SERVERS
+    });
+
+    currentStream.getTracks().forEach(track => {
+      peer.addTrack(track, currentStream);
+    });
+
+    peer.onicecandidate = (e) => {
+      if (e.candidate) {
+        socket.emit("signal", {
+          to: adminId,
+          data: e.candidate
+        });
+      }
+    };
+
+    peer.oniceconnectionstatechange = () => {
+      console.log("ICE Connection State:", peer.iceConnectionState);
+      
+      if (peer.iceConnectionState === 'connected') {
+        console.log("✅ WebRTC Reconnected!");
+        isConnected = true;
+        updatePermissionUI('connected');
+      } else if (peer.iceConnectionState === 'failed') {
+        console.error("❌ WebRTC Reconnection Failed");
+        setTimeout(() => reconnectPeer(), 3000);
+      }
+    };
+
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+
+    socket.emit("signal", {
+      to: adminId,
+      data: offer
+    });
+    
+    console.log("Reconnection offer sent");
+  } catch (err) {
+    console.error("Reconnection error:", err);
+    setTimeout(() => reconnectPeer(), 3000);
   }
 }
 

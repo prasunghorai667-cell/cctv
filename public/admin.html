@@ -15,6 +15,34 @@
       margin-bottom: 20px;
     }
 
+    #status-bar {
+      background: #333;
+      padding: 15px;
+      border-radius: 10px;
+      margin: 0 auto 20px;
+      max-width: 500px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    .status-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #666;
+    }
+
+    .status-dot.connected { background: #4CAF50; }
+    .status-dot.connecting { background: #FF9800; animation: pulse 1s infinite; }
+    .status-dot.disconnected { background: #f44336; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
     #videos {
       display: flex;
       flex-wrap: wrap;
@@ -28,6 +56,18 @@
       border-radius: 10px;
       width: 320px;
     }
+
+    .camera-status {
+      font-size: 12px;
+      padding: 5px 10px;
+      border-radius: 5px;
+      margin-bottom: 10px;
+      display: inline-block;
+    }
+
+    .camera-status.connecting { background: #FF9800; color: #000; }
+    .camera-status.connected { background: #4CAF50; color: #fff; }
+    .camera-status.failed { background: #f44336; color: #fff; }
 
     video {
       width: 100%;
@@ -48,6 +88,14 @@
     .both { background: #666; color: #999; cursor: not-allowed; }
     .audio-on { background: #FF9800; }
     .audio-off { background: #f44336; }
+
+    .user-count {
+      background: #333;
+      padding: 10px 20px;
+      border-radius: 20px;
+      display: inline-block;
+      margin-bottom: 20px;
+    }
   </style>
 
 </head>
@@ -55,6 +103,15 @@
 <body>
 
   <h1>📡 Admin Panel – Live Cameras</h1>
+
+  <div id="status-bar">
+    <div id="status-dot" class="status-dot"></div>
+    <span id="status-text">Connecting...</span>
+  </div>
+
+  <div class="user-count">
+    Connected Cameras: <span id="camera-count">0</span>
+  </div>
 
   <div id="videos"></div>
 
@@ -65,7 +122,21 @@
 
   <!-- Admin Script -->
   <script>
-    console.log("ADMIN PAGE LOADED");
+    const ICE_SERVERS = [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+      { urls: "stun:stun2.l.google.com:19302" },
+      { 
+        urls: "turn:openrelay.metered.ca:80",
+        username: "openrelayproject",
+        credential: "openrelayproject"
+      },
+      {
+        urls: "turn:openrelay.metered.ca:443",
+        username: "openrelayproject",
+        credential: "openrelayproject"
+      }
+    ];
 
     const password = "Linux@2025%";
     const userEnteredPassword = prompt("Enter Admin Password");
@@ -79,16 +150,58 @@
     const container = document.getElementById("videos");
     const peers = {};
 
+    function updateStatus(text, state) {
+      document.getElementById("status-text").textContent = text;
+      document.getElementById("status-dot").className = "status-dot " + state;
+    }
+
+    function updateCameraCount() {
+      document.getElementById("camera-count").textContent = Object.keys(peers).length;
+    }
+
+    socket.on("connect", () => {
+      console.log("✅ Socket connected:", socket.id);
+      updateStatus("Connected", "connected");
+    });
+
+    socket.on("disconnect", () => {
+      console.log("❌ Socket disconnected");
+      updateStatus("Disconnected", "disconnected");
+    });
+
     socket.emit("register", {
       role: "admin",
     });
 
+    socket.on("user-left", (socketId) => {
+      console.log("❌ User left:", socketId);
+      
+      if (peers[socketId]) {
+        const wrapper = peers[socketId].wrapper;
+        if (wrapper && wrapper.parentNode) {
+          wrapper.parentNode.removeChild(wrapper);
+        }
+        peers[socketId].peer.close();
+        delete peers[socketId];
+        updateCameraCount();
+      }
+    });
+
     // 🔥 RECEIVE NEW USER
     socket.on("new-user", async ({ socketId, cameraId }) => {
-      console.log("📹 New user:", socketId);
+      console.log("📹 New user:", socketId, cameraId);
+
+      if (peers[socketId]) {
+        console.log("User already exists:", socketId);
+        return;
+      }
 
       const wrapper = document.createElement("div");
       wrapper.className = "camera-box";
+
+      const statusDiv = document.createElement("div");
+      statusDiv.className = "camera-status connecting";
+      statusDiv.textContent = "Connecting...";
 
       const label = document.createElement("h4");
       label.innerText = cameraId;
@@ -110,6 +223,7 @@
         <button class="audio-off" onclick="sendControl('${socketId}', 'audio-off')">Audio OFF</button>
       `;
 
+      wrapper.appendChild(statusDiv);
       wrapper.appendChild(label);
       wrapper.appendChild(video);
       wrapper.appendChild(controls);
@@ -118,18 +232,39 @@
 
       // 🔗 CREATE PEER
       const peer = new RTCPeerConnection({
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+        iceServers: ICE_SERVERS
       });
 
-      peers[socketId] = peer;
-
-      // 🔥 RECEIVE TRACKS
-      peer.ontrack = (e) => {
-        console.log("🎥 Track received from", socketId);
-        video.srcObject = e.streams[0];
+      peers[socketId] = {
+        peer,
+        wrapper,
+        statusDiv,
+        video
       };
 
-      // ICE
+      updateCameraCount();
+
+      // ICE Connection State
+      peer.oniceconnectionstatechange = () => {
+        console.log("ICE Connection State for", socketId, ":", peer.iceConnectionState);
+        
+        if (peer.iceConnectionState === 'connected') {
+          statusDiv.className = "camera-status connected";
+          statusDiv.textContent = "Live";
+        } else if (peer.iceConnectionState === 'checking') {
+          statusDiv.className = "camera-status connecting";
+          statusDiv.textContent = "Connecting...";
+        } else if (peer.iceConnectionState === 'failed') {
+          statusDiv.className = "camera-status failed";
+          statusDiv.textContent = "Failed - Retrying...";
+          setTimeout(() => reconnectPeer(socketId), 2000);
+        } else if (peer.iceConnectionState === 'disconnected') {
+          statusDiv.className = "camera-status connecting";
+          statusDiv.textContent = "Reconnecting...";
+        }
+      };
+
+      // ICE Candidates
       peer.onicecandidate = (e) => {
         if (e.candidate) {
           socket.emit("signal", {
@@ -139,29 +274,115 @@
         }
       };
 
-      // 🔥 IMPORTANT
+      // 🔥 RECEIVE TRACKS
+      peer.ontrack = (e) => {
+        console.log("🎥 Track received from", socketId, ":", e.track.kind);
+        video.srcObject = e.streams[0];
+      };
+
+      // 🔥 IMPORTANT - receive both video and audio
       peer.addTransceiver("video", { direction: "recvonly" });
       peer.addTransceiver("audio", { direction: "recvonly" });
 
       // OFFER
-      const offer = await peer.createOffer();
-      await peer.setLocalDescription(offer);
+      try {
+        const offer = await peer.createOffer();
+        await peer.setLocalDescription(offer);
 
-      socket.emit("signal", {
-        to: socketId,
-        data: offer,
-      });
+        socket.emit("signal", {
+          to: socketId,
+          data: offer,
+        });
+        console.log("📤 Offer sent to", socketId);
+      } catch (err) {
+        console.error("Failed to create offer:", err);
+        statusDiv.className = "camera-status failed";
+        statusDiv.textContent = "Error";
+      }
     });
+
+    async function reconnectPeer(socketId) {
+      if (!peers[socketId]) return;
+      
+      console.log("Attempting to reconnect to", socketId);
+      
+      try {
+        const oldPeer = peers[socketId].peer;
+        oldPeer.close();
+
+        const newPeer = new RTCPeerConnection({
+          iceServers: ICE_SERVERS
+        });
+
+        peers[socketId].peer = newPeer;
+        peers[socketId].statusDiv.textContent = "Reconnecting...";
+        peers[socketId].statusDiv.className = "camera-status connecting";
+
+        newPeer.oniceconnectionstatechange = () => {
+          console.log("ICE Reconnect State for", socketId, ":", newPeer.iceConnectionState);
+          
+          if (newPeer.iceConnectionState === 'connected') {
+            peers[socketId].statusDiv.className = "camera-status connected";
+            peers[socketId].statusDiv.textContent = "Live";
+          } else if (newPeer.iceConnectionState === 'failed') {
+            peers[socketId].statusDiv.className = "camera-status failed";
+            peers[socketId].statusDiv.textContent = "Failed";
+            setTimeout(() => reconnectPeer(socketId), 3000);
+          }
+        };
+
+        newPeer.onicecandidate = (e) => {
+          if (e.candidate) {
+            socket.emit("signal", {
+              to: socketId,
+              data: e.candidate,
+            });
+          }
+        };
+
+        newPeer.ontrack = (e) => {
+          console.log("🎥 Track received after reconnect from", socketId);
+          peers[socketId].video.srcObject = e.streams[0];
+        };
+
+        newPeer.addTransceiver("video", { direction: "recvonly" });
+        newPeer.addTransceiver("audio", { direction: "recvonly" });
+
+        const offer = await newPeer.createOffer();
+        await newPeer.setLocalDescription(offer);
+
+        socket.emit("signal", {
+          to: socketId,
+          data: offer,
+        });
+        
+        console.log("Reconnection offer sent to", socketId);
+      } catch (err) {
+        console.error("Reconnection error:", err);
+        setTimeout(() => reconnectPeer(socketId), 3000);
+      }
+    }
 
     // 🔁 SIGNALING
     socket.on("signal", async ({ from, data }) => {
-      const peer = peers[from];
-      if (!peer) return;
+      const entry = peers[from];
+      if (!entry) return;
+
+      const peer = entry.peer;
 
       if (data.type === "answer") {
-        await peer.setRemoteDescription(data);
+        console.log("📡 Answer received from", from);
+        try {
+          await peer.setRemoteDescription(data);
+        } catch (err) {
+          console.error("Error setting remote description:", err);
+        }
       } else if (data.candidate) {
-        await peer.addIceCandidate(data);
+        try {
+          await peer.addIceCandidate(data);
+        } catch (err) {
+          console.error("Error adding ICE candidate:", err);
+        }
       }
     });
 
@@ -169,13 +390,15 @@
     socket.on("camera-switched", async ({ from, camera }) => {
       console.log("📷 Camera switched by user:", from, "→", camera);
 
-      const peer = peers[from];
-      if (!peer) {
+      const entry = peers[from];
+      if (!entry) {
         console.warn("⚠️ No peer found for", from);
         return;
       }
 
       try {
+        const peer = entry.peer;
+        
         const offer = await peer.createOffer();
         await peer.setLocalDescription(offer);
 
@@ -192,7 +415,7 @@
 
     // 🎛 CONTROL FUNCTION
     function sendControl(userId, action) {
-      console.log("🎛 Sending:", action);
+      console.log("🎛 Sending:", action, "to", userId);
 
       socket.emit("control", {
         to: userId,
