@@ -6,21 +6,28 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
+// Serve frontend files
 app.use(express.static("public"));
-const users = {}; // socketId -> { role, cameraId }
+
+// Store users
+// socketId -> { role, cameraId }
+const users = {};
 
 io.on("connection", (socket) => {
   console.log("🟢 Connected:", socket.id);
 
+  // ==============================
   // REGISTER USER / ADMIN
+  // ==============================
   socket.on("register", ({ role, cameraId }) => {
-    console.log("📥 Register event:", socket.id, role, cameraId);
+    console.log("📥 Register:", socket.id, role, cameraId);
 
     users[socket.id] = { role, cameraId };
 
-    // If USER joins, notify admin
+    // 🔹 USER JOINED → notify admin
     if (role === "user") {
       const adminId = getAdmin();
+
       console.log("👤 User joined. Admin:", adminId);
 
       if (adminId) {
@@ -28,13 +35,14 @@ io.on("connection", (socket) => {
           socketId: socket.id,
           cameraId,
         });
+
         console.log("📤 Sent new-user to admin");
       }
     }
 
-    // If ADMIN joins, send all existing users
+    // 🔹 ADMIN JOINED → send all users
     if (role === "admin") {
-      console.log("🛠 Admin joined. Sending existing users");
+      console.log("🛠 Admin joined. Sending users...");
 
       Object.keys(users).forEach((id) => {
         if (users[id].role === "user") {
@@ -42,13 +50,16 @@ io.on("connection", (socket) => {
             socketId: id,
             cameraId: users[id].cameraId,
           });
+
           console.log("📤 Sent existing user:", id);
         }
       });
     }
   });
 
+  // ==============================
   // WEBRTC SIGNALING
+  // ==============================
   socket.on("signal", ({ to, data }) => {
     console.log(
       "📡 Signal:",
@@ -64,20 +75,54 @@ io.on("connection", (socket) => {
     });
   });
 
+  // ==============================
+  // 🔥 ADMIN CONTROL SYSTEM
+  // ==============================
+  socket.on("control", ({ to, action }) => {
+    console.log(
+      "🎛 Control:",
+      socket.id,
+      "→",
+      to,
+      "| Action:",
+      action
+    );
+
+    // Only allow admin to control users
+    if (users[socket.id]?.role !== "admin") {
+      console.log("❌ Unauthorized control attempt");
+      return;
+    }
+
+    // Send control to target user
+    io.to(to).emit("control", action);
+  });
+
+  // ==============================
+  // DISCONNECT
+  // ==============================
   socket.on("disconnect", () => {
     console.log("🔴 Disconnected:", socket.id);
+
     delete users[socket.id];
+
+    // Notify everyone user left
     io.emit("user-left", socket.id);
   });
 });
 
+// ==============================
+// GET ADMIN SOCKET ID
+// ==============================
 function getAdmin() {
-  const admin = Object.keys(users).find(
+  return Object.keys(users).find(
     (id) => users[id].role === "admin"
   );
-  return admin;
 }
 
+// ==============================
+// START SERVER
+// ==============================
 server.listen(3000, () => {
   console.log("🚀 Server running at http://localhost:3000");
 });

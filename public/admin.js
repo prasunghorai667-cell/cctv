@@ -1,12 +1,15 @@
 console.log("ADMIN PAGE LOADED");
 
+// 🔐 SIMPLE PASSWORD CHECK
 const password = "Linux@2025%";
-const userEnteredPassword = prompt('please enter your password');
-const passwordIsCorrect = password == userEnteredPassword;
-if(!passwordIsCorrect) {
-    window.history.back();
+const userEnteredPassword = prompt("Please enter admin password");
+
+if (password !== userEnteredPassword) {
+  alert("Wrong password");
+  window.location.href = "/";
 }
 
+// 🔌 SOCKET CONNECT
 const socket = io();
 
 socket.emit("register", {
@@ -16,39 +19,76 @@ socket.emit("register", {
 const container = document.getElementById("videos");
 const peers = {};
 
+// 🎛 SEND CONTROL TO USER
+function sendControl(userId, action) {
+  console.log("🎛 Sending control:", action, "to", userId);
+
+  socket.emit("control", {
+    to: userId,
+    action,
+  });
+}
+
+// 📹 WHEN NEW USER CONNECTS
 socket.on("new-user", async ({ socketId, cameraId }) => {
   console.log("📹 New user:", socketId, cameraId);
 
+  // 📦 WRAPPER
   const wrapper = document.createElement("div");
+  wrapper.style.border = "1px solid #ccc";
+  wrapper.style.margin = "10px";
+  wrapper.style.padding = "10px";
 
+  // 🏷 LABEL
   const label = document.createElement("h4");
   label.innerText = cameraId;
 
-  const video = document.createElement("video");
-  video.autoplay = false;
-  video.playsInline = true;
-  video.setAttribute('controls', true)
+  // 🎥 VIDEO CONTAINER (MULTIPLE STREAM SUPPORT)
+  const videoContainer = document.createElement("div");
+
+  // 🎛 CONTROLS
+  const controls = document.createElement("div");
+
+  controls.innerHTML = `
+    <button onclick="sendControl('${socketId}', 'front')">Front</button>
+    <button onclick="sendControl('${socketId}', 'back')">Back</button>
+    <button onclick="sendControl('${socketId}', 'both')">Both</button>
+    <button onclick="sendControl('${socketId}', 'audio-on')">Audio ON</button>
+    <button onclick="sendControl('${socketId}', 'audio-off')">Audio OFF</button>
+  `;
 
   wrapper.appendChild(label);
-  wrapper.appendChild(video);
+  wrapper.appendChild(controls);
+  wrapper.appendChild(videoContainer);
   container.appendChild(wrapper);
 
+  // 🔗 CREATE PEER
   const peer = new RTCPeerConnection({
     iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
   });
 
-  peers[socketId] = peer;
-
-  // 🔑 THIS IS THE MAGIC LINE
-  peer.addTransceiver("video", { direction: "recvonly" });
-  peer.addTransceiver("audio", { direction: "recvonly" });
-
-
-  peer.ontrack = (e) => {
-    console.log("🎥 Video track received from", socketId);
-    video.srcObject = e.streams[0];
+  peers[socketId] = {
+    peer,
+    videoContainer,
   };
 
+  // 🎯 RECEIVE MULTIPLE TRACKS
+  peer.ontrack = (e) => {
+    console.log("🎥 Track received:", e.track.kind, "from", socketId);
+
+    const video = document.createElement("video");
+    video.autoplay = true;
+    video.playsInline = true;
+    video.controls = true;
+    video.style.width = "300px";
+    video.style.margin = "5px";
+
+    video.srcObject = e.streams[0];
+
+    videoContainer.appendChild(video);
+  };
+
+  // 📡 ICE
   peer.onicecandidate = (e) => {
     if (e.candidate) {
       socket.emit("signal", {
@@ -58,7 +98,12 @@ socket.on("new-user", async ({ socketId, cameraId }) => {
     }
   };
 
+  // 🔑 RECEIVE ONLY MODE
+  peer.addTransceiver("video", { direction: "recvonly" });
+  peer.addTransceiver("audio", { direction: "recvonly" });
+
   console.log("📡 Creating offer for", socketId);
+
   const offer = await peer.createOffer();
   await peer.setLocalDescription(offer);
 
@@ -68,14 +113,27 @@ socket.on("new-user", async ({ socketId, cameraId }) => {
   });
 });
 
+// 📡 HANDLE SIGNALS
 socket.on("signal", async ({ from, data }) => {
-  const peer = peers[from];
-  if (!peer) return;
+  const entry = peers[from];
+  if (!entry) return;
+
+  const peer = entry.peer;
 
   if (data.type === "answer") {
     console.log("📡 Answer received from", from);
     await peer.setRemoteDescription(data);
   } else if (data.candidate) {
     await peer.addIceCandidate(data);
+  }
+});
+
+// ❌ USER DISCONNECT
+socket.on("user-left", (socketId) => {
+  console.log("❌ User left:", socketId);
+
+  if (peers[socketId]) {
+    peers[socketId].peer.close();
+    delete peers[socketId];
   }
 });
