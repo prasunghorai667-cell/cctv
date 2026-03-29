@@ -10,9 +10,11 @@ let adminId = null;
 
 let frontCameraId = null;
 let backCameraId = null;
+let currentCameraId = null;
 let currentFacingMode = "user";
 let cameraPermissionGranted = false;
 let isConnected = false;
+let pendingRenegotiation = false;
 
 const ICE_SERVERS = [
   { urls: "stun:stun.l.google.com:19302" },
@@ -77,17 +79,33 @@ async function enumerateCameras() {
     frontCameraId = null;
     backCameraId = null;
     
-    if (cameras.length >= 2) {
+    cameras.forEach((cam, index) => {
+      const label = (cam.label || '').toLowerCase();
+      const deviceId = cam.deviceId;
+      
+      console.log(`Camera ${index}:`, cam.label || 'No label', "| ID:", deviceId);
+      
+      if (label.includes('front') || label.includes('front')) {
+        frontCameraId = deviceId;
+        console.log("  → Identified as FRONT camera");
+      } else if (label.includes('back') || label.includes('rear') || label.includes('environment')) {
+        backCameraId = deviceId;
+        console.log("  → Identified as BACK camera");
+      }
+    });
+    
+    if (!frontCameraId && cameras.length >= 1) {
       frontCameraId = cameras[0].deviceId;
-      backCameraId = cameras[1].deviceId;
-    } else if (cameras.length === 1) {
-      frontCameraId = cameras[0].deviceId;
-      backCameraId = cameras[0].deviceId;
+      console.log("  → Using Camera 0 as FRONT (by default)");
     }
     
-    cameras.forEach((cam, index) => {
-      console.log(`Camera ${index}:`, cam.label || 'No label', "| ID:", cam.deviceId);
-    });
+    if (!backCameraId && cameras.length >= 2) {
+      backCameraId = cameras[1].deviceId;
+      console.log("  → Using Camera 1 as BACK (by default)");
+    } else if (!backCameraId && cameras.length === 1) {
+      backCameraId = cameras[0].deviceId;
+      console.log("  → Only one camera available, using same for BACK");
+    }
     
     console.log("frontCameraId:", frontCameraId);
     console.log("backCameraId:", backCameraId);
@@ -235,6 +253,11 @@ function connectToServer() {
         data: answer
       });
       console.log("📤 Sent answer");
+      
+      if (pendingRenegotiation) {
+        console.log("Renegotiation complete");
+        pendingRenegotiation = false;
+      }
     } else if (data.candidate) {
       try {
         await peer.addIceCandidate(data);
@@ -337,83 +360,121 @@ async function switchCamera(target) {
     return false;
   }
 
-  const targetFacing = target === "front" ? "user" : "environment";
+  const targetCameraId = target === "front" ? frontCameraId : backCameraId;
   
-  if (currentFacingMode === targetFacing && currentVideoTrack) {
-    console.log("Already using this camera:", targetFacing);
+  if (!targetCameraId) {
+    console.error("Camera ID not found for:", target);
+    return false;
+  }
+
+  if (currentCameraId === targetCameraId) {
+    console.log("Already using this camera:", target);
     return true;
   }
 
-  console.log("Switching camera to:", target);
+  console.log("Switching camera to:", target, "| Camera ID:", targetCameraId);
+
+  if (pendingRenegotiation) {
+    console.log("Renegotiation already in progress, waiting...");
+    return false;
+  }
 
   try {
+    const audioTracks = currentStream.getAudioTracks();
     let newStream;
     let newVideoTrack;
 
-    const methods = [
-      () => navigator.mediaDevices.getUserMedia({
-        video: { facingMode: targetFacing },
-        audio: false
-      }),
-      () => navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { exact: targetFacing } },
-        audio: false
-      }),
-      () => navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: false
-      })
+    const constraints = [
+      { video: { deviceId: { exact: targetCameraId } }, audio: false },
+      { video: { deviceId: targetCameraId }, audio: false },
+      { video: { facingMode: target === "front" ? "user" : "environment" }, audio: false },
+      { video: true, audio: false }
     ];
 
     let lastError = null;
     
-    for (let i = 0; i < methods.length; i++) {
+    for (let i = 0; i < constraints.length; i++) {
       try {
-        newStream = await methods[i]();
-        console.log("Method", i + 1, "succeeded");
+        console.log("Trying method", i + 1, "...");
+        newStream = await navigator.mediaDevices.getUserMedia(constraints[i]);
+        newVideoTrack = newStream.getVideoTracks()[0];
+        console.log("Method", i + 1, "succeeded! Track:", newVideoTrack.label);
         break;
       } catch (err) {
         lastError = err;
-        console.warn("Method", i + 1, "failed:", err.message);
+        console.warn("Method", i + 1, "failed:", err.name, err.message);
       }
     }
 
-    if (!newStream) {
+    if (!newStream || !newVideoTrack) {
       console.error("All methods failed");
       throw lastError;
-    }
-
-    newVideoTrack = newStream.getVideoTracks()[0];
-
-    const sender = peer.getSenders().find(s => s.track && s.track.kind === "video");
-
-    if (sender) {
-      await sender.replaceTrack(newVideoTrack);
-      console.log("Video track replaced");
-    } else {
-      peer.addTrack(newVideoTrack, newStream);
     }
 
     if (currentVideoTrack) {
       currentVideoTrack.stop();
     }
 
-    currentVideoTrack = newVideoTrack;
-    currentFacingMode = targetFacing;
-
-    const combinedStream = new MediaStream([
+    currentStream.getTracks().forEach(track => track.stop());
+    
+    currentStream = new MediaStream([
       newVideoTrack,
-      ...currentStream.getAudioTracks()
+      ...audioTracks
     ]);
+    
+    video.srcObject = currentStream;
+    currentVideoTrack = newVideoTrack;
+    currentCameraId = targetCameraId;
+    currentFacingMode = target === "front" ? "user" : "environment";
 
-    video.srcObject = combinedStream;
+    console.log("Triggering renegotiation...");
+    pendingRenegotiation = true;
+    
+    await renegotiatePeer();
+    
     updateCameraBadge(target);
-    console.log("Camera switched to:", target);
+    console.log("Camera switched successfully to:", target);
     return true;
 
   } catch (err) {
     console.error("Camera switch failed:", err);
+    pendingRenegotiation = false;
     return false;
+  }
+}
+
+async function renegotiatePeer() {
+  if (!peer || !adminId || !socket) {
+    console.error("Cannot renegotiate: missing peer, adminId, or socket");
+    pendingRenegotiation = false;
+    return;
+  }
+
+  console.log("Starting renegotiation...");
+
+  try {
+    const senders = peer.getSenders();
+    const videoSender = senders.find(s => s.track && s.track.kind === "video");
+    
+    if (videoSender && currentVideoTrack) {
+      console.log("Replacing video track...");
+      await videoSender.replaceTrack(currentVideoTrack);
+    }
+
+    console.log("Creating renegotiation offer...");
+    const offer = await peer.createOffer({ iceRestart: true });
+    await peer.setLocalDescription(offer);
+
+    socket.emit("signal", {
+      to: adminId,
+      data: offer
+    });
+
+    console.log("Renegotiation offer sent");
+
+  } catch (err) {
+    console.error("Renegotiation failed:", err);
+    pendingRenegotiation = false;
   }
 }
 

@@ -232,7 +232,8 @@
 
       // 🔗 CREATE PEER
       const peer = new RTCPeerConnection({
-        iceServers: ICE_SERVERS
+        iceServers: ICE_SERVERS,
+        iceCandidatePoolSize: 10
       });
 
       peers[socketId] = {
@@ -251,16 +252,31 @@
         if (peer.iceConnectionState === 'connected') {
           statusDiv.className = "camera-status connected";
           statusDiv.textContent = "Live";
+          console.log("✅ Camera", cameraId, "is now LIVE");
         } else if (peer.iceConnectionState === 'checking') {
           statusDiv.className = "camera-status connecting";
           statusDiv.textContent = "Connecting...";
         } else if (peer.iceConnectionState === 'failed') {
           statusDiv.className = "camera-status failed";
           statusDiv.textContent = "Failed - Retrying...";
+          console.error("❌ Camera", cameraId, "connection FAILED");
           setTimeout(() => reconnectPeer(socketId), 2000);
         } else if (peer.iceConnectionState === 'disconnected') {
           statusDiv.className = "camera-status connecting";
           statusDiv.textContent = "Reconnecting...";
+          console.warn("⚠️ Camera", cameraId, "disconnected");
+        }
+      };
+      
+      // Track changes - when video track changes
+      peer.ontrack = (e) => {
+        console.log("🎥 Track received from", socketId, ":", e.track.kind, "| Label:", e.track.label);
+        if (e.streams && e.streams[0]) {
+          video.srcObject = e.streams[0];
+          const videoTrack = e.streams[0].getVideoTracks()[0];
+          if (videoTrack) {
+            console.log("📹 Playing video from:", videoTrack.label);
+          }
         }
       };
 
@@ -272,12 +288,6 @@
             data: e.candidate,
           });
         }
-      };
-
-      // 🔥 RECEIVE TRACKS
-      peer.ontrack = (e) => {
-        console.log("🎥 Track received from", socketId, ":", e.track.kind);
-        video.srcObject = e.streams[0];
       };
 
       // 🔥 IMPORTANT - receive both video and audio
