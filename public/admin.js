@@ -49,13 +49,33 @@ socket.on("new-user", async ({ socketId, cameraId }) => {
   // 🎛 CONTROLS
   const controls = document.createElement("div");
 
-  controls.innerHTML = `
-    <button onclick="sendControl('${socketId}', 'front')">Front</button>
-    <button onclick="sendControl('${socketId}', 'back')">Back</button>
-    <button onclick="sendControl('${socketId}', 'both')">Both</button>
-    <button onclick="sendControl('${socketId}', 'audio-on')">Audio ON</button>
-    <button onclick="sendControl('${socketId}', 'audio-off')">Audio OFF</button>
-  `;
+  const btnFront = document.createElement("button");
+btnFront.innerText = "Front";
+btnFront.onclick = () => sendControl(socketId, "front");
+
+const btnBack = document.createElement("button");
+btnBack.innerText = "Back";
+btnBack.onclick = () => sendControl(socketId, "back");
+
+const btnBoth = document.createElement("button");
+btnBoth.innerText = "Both";
+btnBoth.onclick = () => sendControl(socketId, "both");
+
+const btnAudioOn = document.createElement("button");
+btnAudioOn.innerText = "Audio ON";
+btnAudioOn.onclick = () => sendControl(socketId, "audio-on");
+
+const btnAudioOff = document.createElement("button");
+btnAudioOff.innerText = "Audio OFF";
+btnAudioOff.onclick = () => sendControl(socketId, "audio-off");
+
+controls.append(
+  btnFront,
+  btnBack,
+  btnBoth,
+  btnAudioOn,
+  btnAudioOff
+);
 
   wrapper.appendChild(label);
   wrapper.appendChild(controls);
