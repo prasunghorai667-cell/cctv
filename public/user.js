@@ -30,32 +30,31 @@ const ICE_SERVERS = [
   }
 ];
 
-function updatePermissionUI(state) {
+function updateStatusUI(status, message, showButton = false) {
   const indicator = document.getElementById('status-indicator');
   const text = document.getElementById('permission-text');
   const msg = document.getElementById('permission-msg');
+  const btn = document.getElementById('enable-btn');
   
-  if (!indicator || !text || !msg) return;
+  if (indicator) {
+    indicator.className = 'status-indicator ' + status;
+  }
   
-  indicator.className = 'status-indicator ' + state;
+  if (text) {
+    text.textContent = message;
+  }
   
-  if (state === 'granted') {
-    text.textContent = 'Camera Connected';
-    msg.classList.remove('show');
-  } else if (state === 'denied') {
-    text.textContent = 'Camera Denied';
-    msg.classList.add('show');
-    msg.style.background = '#f44336';
-    msg.textContent = 'Camera access is blocked. Please enable camera in browser settings.';
-  } else if (state === 'connecting') {
-    text.textContent = 'Connecting...';
-    msg.classList.remove('show');
-  } else if (state === 'connected') {
-    text.textContent = 'Connected to Admin';
-    msg.classList.remove('show');
-  } else {
-    text.textContent = 'Waiting for permission...';
-    msg.classList.add('show');
+  if (msg) {
+    if (showButton) {
+      msg.classList.add('show');
+      msg.innerHTML = message;
+    } else {
+      msg.classList.remove('show');
+    }
+  }
+  
+  if (btn) {
+    btn.style.display = showButton ? 'inline-block' : 'none';
   }
 }
 
@@ -66,14 +65,6 @@ function updateCameraBadge(camera) {
     badge.textContent = camera.toUpperCase();
     badge.style.background = camera === 'front' ? '#2196F3' : '#4CAF50';
   }
-}
-
-function updateConnectionStatus(status) {
-  const text = document.getElementById('permission-text');
-  if (text) {
-    text.textContent = status;
-  }
-  console.log("Connection Status:", status);
 }
 
 async function enumerateCameras() {
@@ -108,34 +99,18 @@ async function enumerateCameras() {
   }
 }
 
-async function start() {
+async function requestCameraAccess() {
+  updateStatusUI('prompt', 'Requesting camera access...', false);
+  
   try {
-    updatePermissionUI('prompt');
+    console.log("Requesting camera access...");
     
-    let stream;
-    let attempts = 0;
-    const maxAttempts = 3;
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true
+    });
     
-    while (!stream && attempts < maxAttempts) {
-      attempts++;
-      console.log("Camera access attempt:", attempts);
-      
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: true
-        });
-        console.log("Camera access granted!");
-      } catch (err) {
-        console.warn("Attempt", attempts, "failed:", err.message);
-        
-        if (attempts >= maxAttempts) {
-          throw err;
-        }
-        
-        await new Promise(r => setTimeout(r, 500));
-      }
-    }
+    console.log("Camera access granted!");
     
     cameraPermissionGranted = true;
     currentStream = stream;
@@ -145,135 +120,155 @@ async function start() {
     video.srcObject = stream;
     video.muted = true;
     
-    updatePermissionUI('granted');
+    updateStatusUI('granted', 'Camera Connected', false);
     updateCameraBadge('front');
-    console.log("Mobile camera ready");
     
     await enumerateCameras();
     
-    updateConnectionStatus('Connecting to server...');
+    connectToServer();
     
-    socket = io();
+  } catch (err) {
+    console.error("Camera access error:", err.name, err.message);
+    
+    let errorMessage = 'Camera access failed.';
+    
+    if (err.name === 'NotAllowedError') {
+      errorMessage = 'Camera access denied. Please tap the button below and allow camera access.';
+    } else if (err.name === 'NotFoundError') {
+      errorMessage = 'No camera found on this device.';
+    } else if (err.name === 'NotReadableError') {
+      errorMessage = 'Camera is in use by another app. Please close other apps.';
+    } else if (err.name === 'OverconstrainedError') {
+      errorMessage = 'Camera settings not supported.';
+    } else if (err.name === 'SecurityError') {
+      errorMessage = 'HTTPS required for camera access.';
+    } else {
+      errorMessage = 'Camera error: ' + err.message;
+    }
+    
+    updateStatusUI('denied', errorMessage, true);
+  }
+}
 
-    const cameraId = "Camera-" + Math.floor(Math.random() * 10000);
+function connectToServer() {
+  console.log("Connecting to server...");
+  
+  socket = io();
 
-    socket.on("connect", () => {
-      console.log("✅ Socket connected:", socket.id);
-      updateConnectionStatus('Connected, waiting for admin...');
-    });
+  const cameraId = "Camera-" + Math.floor(Math.random() * 10000);
 
-    socket.on("disconnect", () => {
-      console.log("❌ Socket disconnected");
-      isConnected = false;
-      updateConnectionStatus('Disconnected');
-    });
-
+  socket.on("connect", () => {
+    console.log("✅ Socket connected:", socket.id);
+    updateStatusUI('connected', 'Connected - Waiting for admin...', false);
+    
     socket.emit("register", {
       role: "user",
       cameraId
     });
+  });
 
-    socket.on("signal", async ({ from, data }) => {
-      adminId = from;
-      console.log("📡 Signal received from:", from);
+  socket.on("disconnect", () => {
+    console.log("❌ Socket disconnected");
+    isConnected = false;
+    updateStatusUI('prompt', 'Disconnected - Tap to reconnect', true);
+  });
 
-      if (!peer) {
-        console.log("Creating new RTCPeerConnection...");
-        peer = new RTCPeerConnection({
-          iceServers: ICE_SERVERS
-        });
+  socket.on("signal", async ({ from, data }) => {
+    adminId = from;
+    console.log("📡 Signal received from:", from);
 
-        currentStream.getTracks().forEach(track => {
-          peer.addTrack(track, currentStream);
-        });
+    if (!peer) {
+      console.log("Creating new RTCPeerConnection...");
+      peer = new RTCPeerConnection({
+        iceServers: ICE_SERVERS
+      });
 
-        peer.onicecandidate = (e) => {
-          if (e.candidate) {
-            socket.emit("signal", {
-              to: from,
-              data: e.candidate
-            });
-          }
-        };
+      currentStream.getTracks().forEach(track => {
+        peer.addTrack(track, currentStream);
+      });
 
-        peer.oniceconnectionstatechange = () => {
-          console.log("ICE Connection State:", peer.iceConnectionState);
-          
-          if (peer.iceConnectionState === 'connected') {
-            console.log("✅ WebRTC Connected!");
-            isConnected = true;
-            updatePermissionUI('connected');
-          } else if (peer.iceConnectionState === 'failed') {
-            console.error("❌ WebRTC Failed");
-            isConnected = false;
-            updateConnectionStatus('Connection failed - retrying...');
-            setTimeout(() => reconnectPeer(), 2000);
-          } else if (peer.iceConnectionState === 'disconnected') {
-            console.warn("⚠️ WebRTC disconnected");
-            isConnected = false;
-          }
-        };
-
-        peer.onicegatheringstatechange = () => {
-          console.log("ICE Gathering State:", peer.iceGatheringState);
-        };
-
-        peer.ontrack = (e) => {
-          console.log("🎥 Track received:", e.track.kind);
-        };
-      }
-
-      if (data.type === "offer") {
-        console.log("📨 Received offer, creating answer...");
-        await peer.setRemoteDescription(data);
-
-        const answer = await peer.createAnswer();
-        await peer.setLocalDescription(answer);
-
-        socket.emit("signal", {
-          to: from,
-          data: answer
-        });
-        console.log("📤 Sent answer");
-      } else if (data.candidate) {
-        try {
-          await peer.addIceCandidate(data);
-        } catch (err) {
-          console.error("Error adding ICE candidate:", err);
+      peer.onicecandidate = (e) => {
+        if (e.candidate) {
+          socket.emit("signal", {
+            to: from,
+            data: e.candidate
+          });
         }
-      }
-    });
+      };
 
-    socket.on("control", async (action) => {
-      console.log("🎛 Control received:", action);
-
-      if (action === "front") {
-        const success = await switchCamera("front");
-        if (success && adminId) {
-          socket.emit("camera-switched", { to: adminId, camera: "front" });
+      peer.oniceconnectionstatechange = () => {
+        console.log("ICE Connection State:", peer.iceConnectionState);
+        
+        if (peer.iceConnectionState === 'connected') {
+          console.log("✅ WebRTC Connected!");
+          isConnected = true;
+          updateStatusUI('connected', 'Connected to Admin', false);
+        } else if (peer.iceConnectionState === 'failed') {
+          console.error("❌ WebRTC Failed");
+          isConnected = false;
+          updateStatusUI('denied', 'Connection failed - Tap to retry', true);
+          setTimeout(() => reconnectPeer(), 2000);
+        } else if (peer.iceConnectionState === 'disconnected') {
+          console.warn("⚠️ WebRTC disconnected");
+          isConnected = false;
         }
-      }
+      };
 
-      if (action === "back") {
-        const success = await switchCamera("back");
-        if (success && adminId) {
-          socket.emit("camera-switched", { to: adminId, camera: "back" });
-        }
-      }
+      peer.onicegatheringstatechange = () => {
+        console.log("ICE Gathering State:", peer.iceGatheringState);
+      };
 
-      if (action === "audio-on") {
-        toggleAudio(true);
-      }
+      peer.ontrack = (e) => {
+        console.log("🎥 Track received:", e.track.kind);
+      };
+    }
 
-      if (action === "audio-off") {
-        toggleAudio(false);
-      }
-    });
+    if (data.type === "offer") {
+      console.log("📨 Received offer, creating answer...");
+      await peer.setRemoteDescription(data);
 
-  } catch (err) {
-    console.error("Camera error:", err);
-    updatePermissionUI('denied');
-  }
+      const answer = await peer.createAnswer();
+      await peer.setLocalDescription(answer);
+
+      socket.emit("signal", {
+        to: from,
+        data: answer
+      });
+      console.log("📤 Sent answer");
+    } else if (data.candidate) {
+      try {
+        await peer.addIceCandidate(data);
+      } catch (err) {
+        console.error("Error adding ICE candidate:", err);
+      }
+    }
+  });
+
+  socket.on("control", async (action) => {
+    console.log("🎛 Control received:", action);
+
+    if (action === "front") {
+      const success = await switchCamera("front");
+      if (success && adminId) {
+        socket.emit("camera-switched", { to: adminId, camera: "front" });
+      }
+    }
+
+    if (action === "back") {
+      const success = await switchCamera("back");
+      if (success && adminId) {
+        socket.emit("camera-switched", { to: adminId, camera: "back" });
+      }
+    }
+
+    if (action === "audio-on") {
+      toggleAudio(true);
+    }
+
+    if (action === "audio-off") {
+      toggleAudio(false);
+    }
+  });
 }
 
 async function reconnectPeer() {
@@ -309,7 +304,7 @@ async function reconnectPeer() {
       if (peer.iceConnectionState === 'connected') {
         console.log("✅ WebRTC Reconnected!");
         isConnected = true;
-        updatePermissionUI('connected');
+        updateStatusUI('connected', 'Reconnected to Admin', false);
       } else if (peer.iceConnectionState === 'failed') {
         console.error("❌ WebRTC Reconnection Failed");
         setTimeout(() => reconnectPeer(), 3000);
@@ -430,4 +425,9 @@ function toggleAudio(enable) {
   });
 }
 
-start();
+function enableCamera() {
+  console.log("Enable camera button clicked");
+  requestCameraAccess();
+}
+
+updateStatusUI('prompt', 'Tap the button to enable camera', true);
