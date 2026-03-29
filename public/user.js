@@ -45,46 +45,27 @@ function updateCameraBadge(camera) {
   }
 }
 
-async function checkCameraPermission() {
-  try {
-    const result = await navigator.permissions.query({ name: 'camera' });
-    console.log("Camera permission status:", result.state);
-    return result.state;
-  } catch (err) {
-    console.warn("Permission API not supported, will try direct access");
-    return 'prompt';
-  }
-}
-
-async function enumerateCamerasAfterPermission() {
+async function enumerateCameras() {
   try {
     const devices = await navigator.mediaDevices.enumerateDevices();
     const cameras = devices.filter(d => d.kind === 'videoinput');
     
-    console.log("Available cameras after permission:", cameras.length);
+    console.log("Available cameras:", cameras.length);
     
     frontCameraId = null;
     backCameraId = null;
     
-    cameras.forEach((cam, index) => {
-      const label = cam.label ? cam.label.toLowerCase() : '';
-      console.log(`Camera ${index}:`, cam.label || `Camera ${index} (no label)`, "| deviceId:", cam.deviceId);
-      
-      if (label.includes('front') || label.includes('user')) {
-        frontCameraId = cam.deviceId;
-      } else if (label.includes('back') || label.includes('rear') || label.includes('environment')) {
-        backCameraId = cam.deviceId;
-      }
-    });
-    
-    if (cameras.length === 2 && !frontCameraId && !backCameraId) {
+    if (cameras.length >= 2) {
       frontCameraId = cameras[0].deviceId;
       backCameraId = cameras[1].deviceId;
-      console.log("No labels found, using index order: front=0, back=1");
     } else if (cameras.length === 1) {
       frontCameraId = cameras[0].deviceId;
       backCameraId = cameras[0].deviceId;
     }
+    
+    cameras.forEach((cam, index) => {
+      console.log(`Camera ${index}:`, cam.label || 'No label', "| ID:", cam.deviceId);
+    });
     
     console.log("frontCameraId:", frontCameraId);
     console.log("backCameraId:", backCameraId);
@@ -98,20 +79,32 @@ async function enumerateCamerasAfterPermission() {
 
 async function start() {
   try {
-    const permissionState = await checkCameraPermission();
-    updatePermissionUI(permissionState);
-    
-    if (permissionState === 'denied') {
-      console.error("Camera permission denied");
-      return;
-    }
+    updatePermissionUI('prompt');
     
     let stream;
+    let attempts = 0;
+    const maxAttempts = 3;
     
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: "user" },
-      audio: true
-    });
+    while (!stream && attempts < maxAttempts) {
+      attempts++;
+      console.log("Camera access attempt:", attempts);
+      
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true
+        });
+        console.log("Camera access granted!");
+      } catch (err) {
+        console.warn("Attempt", attempts, "failed:", err.message);
+        
+        if (attempts >= maxAttempts) {
+          throw err;
+        }
+        
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
     
     cameraPermissionGranted = true;
     currentStream = stream;
@@ -123,9 +116,9 @@ async function start() {
     
     updatePermissionUI('granted');
     updateCameraBadge('front');
-    console.log("Mobile camera ready (front camera)");
+    console.log("Mobile camera ready");
     
-    await enumerateCamerasAfterPermission();
+    await enumerateCameras();
     
     socket = io();
 
@@ -223,42 +216,42 @@ async function switchCamera(target) {
     return true;
   }
 
-  console.log("Switching camera to:", target, "| facingMode:", targetFacing);
+  console.log("Switching camera to:", target);
 
   try {
     let newStream;
     let newVideoTrack;
 
-    const getCameraConstraints = (facing) => {
-      if (frontCameraId && backCameraId) {
-        const targetDeviceId = facing === "user" ? frontCameraId : backCameraId;
-        return { video: { deviceId: { exact: targetDeviceId } }, audio: false };
-      }
-      return { video: { facingMode: facing }, audio: false };
-    };
+    const methods = [
+      () => navigator.mediaDevices.getUserMedia({
+        video: { facingMode: targetFacing },
+        audio: false
+      }),
+      () => navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { exact: targetFacing } },
+        audio: false
+      }),
+      () => navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: false
+      })
+    ];
 
     let lastError = null;
     
-    const tryMethods = [
-      () => navigator.mediaDevices.getUserMedia(getCameraConstraints(targetFacing)),
-      () => navigator.mediaDevices.getUserMedia({ video: { facingMode: targetFacing }, audio: false }),
-      () => navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: targetFacing } }, audio: false }),
-      () => navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-    ];
-
-    for (let i = 0; i < tryMethods.length; i++) {
+    for (let i = 0; i < methods.length; i++) {
       try {
-        newStream = await tryMethods[i]();
-        console.log("Camera access method", i + 1, "succeeded");
+        newStream = await methods[i]();
+        console.log("Method", i + 1, "succeeded");
         break;
       } catch (err) {
         lastError = err;
-        console.warn("Camera access method", i + 1, "failed:", err.message);
+        console.warn("Method", i + 1, "failed:", err.message);
       }
     }
 
     if (!newStream) {
-      console.error("All camera access methods failed");
+      console.error("All methods failed");
       throw lastError;
     }
 
@@ -268,9 +261,8 @@ async function switchCamera(target) {
 
     if (sender) {
       await sender.replaceTrack(newVideoTrack);
-      console.log("Video track replaced successfully");
+      console.log("Video track replaced");
     } else {
-      console.warn("No video sender found, adding track");
       peer.addTrack(newVideoTrack, newStream);
     }
 
@@ -288,7 +280,7 @@ async function switchCamera(target) {
 
     video.srcObject = combinedStream;
     updateCameraBadge(target);
-    console.log("Camera switched successfully to:", target);
+    console.log("Camera switched to:", target);
     return true;
 
   } catch (err) {
@@ -299,8 +291,6 @@ async function switchCamera(target) {
 
 function toggleAudio(enable) {
   if (!currentStream) return;
-
-  console.log("Audio:", enable ? "ON" : "OFF");
 
   currentStream.getAudioTracks().forEach(track => {
     track.enabled = enable;
