@@ -444,25 +444,60 @@ async function switchCamera(target) {
 }
 
 async function renegotiatePeer() {
-  if (!peer || !adminId || !socket) {
-    console.error("Cannot renegotiate: missing peer, adminId, or socket");
+  if (!adminId || !socket) {
+    console.error("Cannot renegotiate: missing adminId or socket");
     pendingRenegotiation = false;
     return;
   }
 
-  console.log("Starting renegotiation...");
+  console.log("Starting full peer rebuild...");
 
   try {
-    const senders = peer.getSenders();
-    const videoSender = senders.find(s => s.track && s.track.kind === "video");
-    
-    if (videoSender && currentVideoTrack) {
-      console.log("Replacing video track...");
-      await videoSender.replaceTrack(currentVideoTrack);
+    if (peer) {
+      peer.close();
     }
 
-    console.log("Creating renegotiation offer...");
-    const offer = await peer.createOffer({ iceRestart: true });
+    peer = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+    peer.onicecandidate = (e) => {
+      if (e.candidate) {
+        socket.emit("signal", {
+          to: adminId,
+          data: e.candidate
+        });
+      }
+    };
+
+    peer.oniceconnectionstatechange = () => {
+      console.log("ICE Connection State:", peer.iceConnectionState);
+      
+      if (peer.iceConnectionState === 'connected') {
+        console.log("✅ WebRTC Connected!");
+        isConnected = true;
+        updateStatusUI('connected', 'Connected to Admin', false);
+      } else if (peer.iceConnectionState === 'failed') {
+        console.error("❌ WebRTC Failed");
+        isConnected = false;
+        updateStatusUI('denied', 'Connection failed', true);
+        setTimeout(() => renegotiatePeer(), 2000);
+      } else if (peer.iceConnectionState === 'disconnected') {
+        console.warn("⚠️ WebRTC disconnected");
+        isConnected = false;
+      }
+    };
+
+    const senders = [];
+    if (currentVideoTrack) {
+      senders.push(peer.addTrack(currentVideoTrack, currentStream));
+    }
+    currentStream.getAudioTracks().forEach(track => {
+      peer.addTrack(track, currentStream);
+    });
+
+    console.log("Tracks re-added to peer");
+
+    console.log("Creating new offer...");
+    const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
 
     socket.emit("signal", {
@@ -470,10 +505,10 @@ async function renegotiatePeer() {
       data: offer
     });
 
-    console.log("Renegotiation offer sent");
+    console.log("New offer sent");
 
   } catch (err) {
-    console.error("Renegotiation failed:", err);
+    console.error("Peer rebuild failed:", err);
     pendingRenegotiation = false;
   }
 }
