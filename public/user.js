@@ -5,20 +5,27 @@ const video = document.getElementById("video");
 let peer;
 let socket;
 let currentStream = null;
+let currentVideoTrack = null;
 let adminId = null;
 
 // 🔥 START APP
 async function start() {
   try {
-    // STEP 1 — Ask permission FIRST
-    await navigator.mediaDevices.getUserMedia({
-      video: true,
+    // 🔥 Initial camera (FRONT default)
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user" },
       audio: true
     });
 
-    console.log("Camera permission granted");
+    currentStream = stream;
+    currentVideoTrack = stream.getVideoTracks()[0];
 
-    // STEP 2 — Connect socket
+    video.srcObject = stream;
+    video.muted = true;
+
+    console.log("Mobile camera ready");
+
+    // 🔥 SOCKET CONNECT
     socket = io();
 
     const cameraId = "Camera-" + Math.floor(Math.random() * 10000);
@@ -32,11 +39,14 @@ async function start() {
     socket.on("signal", async ({ from, data }) => {
       adminId = from;
 
-      console.log("USER received:", data.type || "ICE");
-
       if (!peer) {
         peer = new RTCPeerConnection({
           iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+        });
+
+        // ADD TRACKS ONCE
+        currentStream.getTracks().forEach(track => {
+          peer.addTrack(track, currentStream);
         });
 
         peer.onicecandidate = (e) => {
@@ -64,14 +74,11 @@ async function start() {
       }
     });
 
-    // 🔥 CONTROL FROM ADMIN
+    // 🎛 CONTROL FROM ADMIN
     socket.on("control", async (action) => {
-      console.log("🎛 Control received:", action);
+      if (!peer) return;
 
-      if (!peer) {
-        console.warn("Peer not ready yet");
-        return;
-      }
+      console.log("🎛 Mobile control:", action);
 
       if (action === "front") {
         await switchCamera("user");
@@ -81,10 +88,6 @@ async function start() {
         await switchCamera("environment");
       }
 
-      if (action === "both") {
-        await useBothCameras();
-      }
-
       if (action === "audio-on") {
         toggleAudio(true);
       }
@@ -92,107 +95,82 @@ async function start() {
       if (action === "audio-off") {
         toggleAudio(false);
       }
+
+      // 🚫 IGNORE "both" on mobile (not supported)
     });
 
   } catch (err) {
     console.error("Camera error:", err);
-
-    if (err.name === "NotAllowedError") {
-      alert("Camera & mic permission REQUIRED.");
-    } else {
-      alert("Error: " + err.message);
-    }
   }
 }
 
-// 🔥 SWITCH CAMERA (FRONT / BACK)
+// 🔥 MOBILE CAMERA SWITCH (SMOOTH)
 async function switchCamera(mode) {
   try {
-    console.log("Switching camera:", mode);
+    console.log("Switching to:", mode);
 
-    stopCurrentStream();
-
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: mode },
-      audio: true
+    const newStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { exact: mode } },
+      audio: false // 🔥 IMPORTANT (avoid mic restart glitch)
     });
 
-    currentStream = stream;
+    const newVideoTrack = newStream.getVideoTracks()[0];
 
-    video.srcObject = stream;
-    video.muted = true;
-
-    replaceTracks(stream);
-
-  } catch (err) {
-    console.error("Switch camera error:", err);
-  }
-}
-
-// 🔥 BOTH CAMERAS
-async function useBothCameras() {
-  try {
-    console.log("Using BOTH cameras");
-
-    stopCurrentStream();
-
-    const front = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: "user" },
-      audio: true
-    });
-
-    let back = null;
-
-    try {
-      back = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment" }
-      });
-    } catch (e) {
-      console.warn("Back camera not supported");
-    }
-
-    currentStream = front;
-
-    video.srcObject = front;
-    video.muted = true;
-
-    replaceTracks(front);
-
-    // 🔥 Add BACK camera tracks separately
-    if (back) {
-      back.getTracks().forEach(track => {
-        peer.addTrack(track, back);
-      });
-    }
-
-  } catch (err) {
-    console.error("Both camera error:", err);
-  }
-}
-
-// 🔥 REPLACE TRACKS (IMPORTANT)
-function replaceTracks(stream) {
-  const senders = peer.getSenders();
-
-  stream.getTracks().forEach(track => {
-    const sender = senders.find(s => s.track && s.track.kind === track.kind);
+    // 🔥 Replace ONLY video track (smooth switch)
+    const sender = peer.getSenders().find(s => s.track && s.track.kind === "video");
 
     if (sender) {
-      sender.replaceTrack(track);
-    } else {
-      peer.addTrack(track, stream);
+      await sender.replaceTrack(newVideoTrack);
     }
-  });
-}
 
-// 🔥 STOP OLD STREAM
-function stopCurrentStream() {
-  if (currentStream) {
-    currentStream.getTracks().forEach(track => track.stop());
+    // Stop old video track only
+    if (currentVideoTrack) {
+      currentVideoTrack.stop();
+    }
+
+    currentVideoTrack = newVideoTrack;
+
+    // Update local preview
+    const combinedStream = new MediaStream([
+      newVideoTrack,
+      ...currentStream.getAudioTracks()
+    ]);
+
+    video.srcObject = combinedStream;
+
+  } catch (err) {
+    console.warn("Exact mode failed, fallback...");
+
+    // 🔥 fallback for iPhone / some Android
+    const fallbackStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: mode },
+      audio: false
+    });
+
+    const fallbackTrack = fallbackStream.getVideoTracks()[0];
+
+    const sender = peer.getSenders().find(s => s.track && s.track.kind === "video");
+
+    if (sender) {
+      await sender.replaceTrack(fallbackTrack);
+    }
+
+    if (currentVideoTrack) {
+      currentVideoTrack.stop();
+    }
+
+    currentVideoTrack = fallbackTrack;
+
+    const combinedStream = new MediaStream([
+      fallbackTrack,
+      ...currentStream.getAudioTracks()
+    ]);
+
+    video.srcObject = combinedStream;
   }
 }
 
-// 🔥 AUDIO CONTROL
+// 🔥 AUDIO CONTROL (STABLE)
 function toggleAudio(enable) {
   if (!currentStream) return;
 
